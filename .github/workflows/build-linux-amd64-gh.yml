@@ -10,6 +10,8 @@ jobs:
   build-linux-amd64:
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      TARGET: x86_64-unknown-linux-musl
 
     steps:
       - name: Checkout
@@ -21,27 +23,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.90.0"
+          targets: x86_64-unknown-linux-musl
 
-      - name: Install build deps
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            pkg-config \
-            libssl-dev \
-            libsqlite3-dev \
-            cmake \
-            make \
-            g++
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
 
       - name: Build binaries
-        run: cargo build --release --bin hbbs --bin hbbr --bin rustdesk-utils
+        run: cross build --release --bin hbbs --bin hbbr --bin rustdesk-utils --target $TARGET
 
       - name: Package artifacts
         run: |
           mkdir -p dist
-          cp target/release/hbbs dist/
-          cp target/release/hbbr dist/
-          cp target/release/rustdesk-utils dist/
+          cp target/$TARGET/release/hbbs dist/
+          cp target/$TARGET/release/hbbr dist/
+          cp target/$TARGET/release/rustdesk-utils dist/
           tar -C dist -czf rustdesk-server-linux-amd64-github.tar.gz .
 
       - name: Upload artifacts
