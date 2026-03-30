@@ -1,0 +1,56 @@
+name: Build Linux amd64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.90.0"
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            pkg-config \
+            libssl-dev \
+            libsqlite3-dev \
+            cmake \
+            make \
+            g++
+
+      - name: Build binaries
+        run: cargo build --release --bin hbbs --bin hbbr --bin rustdesk-utils
+
+      - name: Package artifacts
+        run: |
+          mkdir -p dist
+          cp target/release/hbbs dist/
+          cp target/release/hbbr dist/
+          cp target/release/rustdesk-utils dist/
+          tar -C dist -czf rustdesk-server-linux-amd64-github.tar.gz .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-server-linux-amd64
+          path: |
+            dist/hbbs
+            dist/hbbr
+            dist/rustdesk-utils
+            rustdesk-server-linux-amd64-github.tar.gz
+          if-no-files-found: error

@@ -553,8 +553,108 @@ impl RendezvousServer {
                     msg_out.set_test_nat_response(res);
                     Self::send_to_sink(sink, msg_out).await;
                 }
-                Some(rendezvous_message::Union::RegisterPk(_)) => {
-                    let res = register_pk_response::Result::NOT_SUPPORT;
+                Some(rendezvous_message::Union::RegisterPk(rk)) => {
+                    let addr = try_into_v4(addr);
+                    let res = if rk.uuid.is_empty() || rk.pk.is_empty() {
+                        UUID_MISMATCH
+                    } else {
+                        let id = rk.id;
+                        let ip = addr.ip().to_string();
+                        if id.len() < 6 {
+                            UUID_MISMATCH
+                        } else if !self.check_ip_blocker(&ip, &id).await {
+                            TOO_FREQUENT
+                        } else {
+                            let peer = self.pm.get_or(&id).await;
+                            let (changed, ip_changed) = {
+                                let peer = peer.read().await;
+                                if peer.uuid.is_empty() {
+                                    (true, false)
+                                } else if peer.uuid == rk.uuid {
+                                    if peer.info.ip != ip && peer.pk != rk.pk {
+                                        log::warn!(
+                                            "Peer {} ip/pk mismatch: {}/{:?} vs {}/{:?}",
+                                            id,
+                                            ip,
+                                            rk.pk,
+                                            peer.info.ip,
+                                            peer.pk,
+                                        );
+                                        (false, false)
+                                    } else {
+                                        let ip_changed = peer.info.ip != ip;
+                                        (
+                                            peer.uuid != rk.uuid || peer.pk != rk.pk || ip_changed,
+                                            ip_changed,
+                                        )
+                                    }
+                                } else {
+                                    log::warn!(
+                                        "Peer {} uuid mismatch: {:?} vs {:?}",
+                                        id,
+                                        rk.uuid,
+                                        peer.uuid
+                                    );
+                                    (false, false)
+                                }
+                            };
+
+                            let res = if !changed {
+                                let peer = self.pm.get_or(&id).await;
+                                let peer_guard = peer.read().await;
+                                if !peer_guard.uuid.is_empty()
+                                    && peer_guard.uuid != rk.uuid
+                                    || (peer_guard.uuid == rk.uuid
+                                        && peer_guard.info.ip != ip
+                                        && peer_guard.pk != rk.pk)
+                                {
+                                    UUID_MISMATCH
+                                } else {
+                                    register_pk_response::Result::OK
+                                }
+                            } else {
+                                let mut req_pk = peer.read().await.reg_pk;
+                                if req_pk.1.elapsed().as_secs() > 6 {
+                                    req_pk.0 = 0;
+                                } else if req_pk.0 > 2 {
+                                    let mut msg_out = RendezvousMessage::new();
+                                    msg_out.set_register_pk_response(RegisterPkResponse {
+                                        result: TOO_FREQUENT.into(),
+                                        ..Default::default()
+                                    });
+                                    Self::send_to_sink(sink, msg_out).await;
+                                    return false;
+                                }
+                                req_pk.0 += 1;
+                                req_pk.1 = Instant::now();
+                                peer.write().await.reg_pk = req_pk;
+                                if ip_changed {
+                                    let mut lock = IP_CHANGES.lock().await;
+                                    if let Some((tm, ips)) = lock.get_mut(&id) {
+                                        if tm.elapsed().as_secs() > IP_CHANGE_DUR {
+                                            *tm = Instant::now();
+                                            ips.clear();
+                                            ips.insert(ip.clone(), 1);
+                                        } else if let Some(v) = ips.get_mut(&ip) {
+                                            *v += 1;
+                                        } else {
+                                            ips.insert(ip.clone(), 1);
+                                        }
+                                    } else {
+                                        lock.insert(
+                                            id.clone(),
+                                            (Instant::now(), HashMap::from([(ip.clone(), 1)])),
+                                        );
+                                    }
+                                }
+                                self.pm
+                                    .update_pk(id, peer, addr, rk.uuid, rk.pk, ip)
+                                    .await
+                            };
+
+                            res
+                        }
+                    };
                     let mut msg_out = RendezvousMessage::new();
                     msg_out.set_register_pk_response(RegisterPkResponse {
                         result: res.into(),
