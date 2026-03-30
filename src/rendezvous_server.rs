@@ -340,14 +340,24 @@ impl RendezvousServer {
                     }
                 }
                 Some(rendezvous_message::Union::RegisterPk(rk)) => {
+                    log::info!(
+                        "udp RegisterPk from {:?}: id={}, uuid_len={}, pk_len={}",
+                        addr,
+                        rk.id,
+                        rk.uuid.len(),
+                        rk.pk.len()
+                    );
                     if rk.uuid.is_empty() || rk.pk.is_empty() {
+                        log::warn!("udp RegisterPk ignored for {:?}: empty uuid or pk", addr);
                         return Ok(());
                     }
                     let id = rk.id;
                     let ip = addr.ip().to_string();
                     if id.len() < 6 {
+                        log::warn!("udp RegisterPk {} rejected: id too short", id);
                         return send_rk_res(socket, addr, UUID_MISMATCH).await;
                     } else if !self.check_ip_blocker(&ip, &id).await {
+                        log::warn!("udp RegisterPk {} rejected: ip blocker", id);
                         return send_rk_res(socket, addr, TOO_FREQUENT).await;
                     }
                     let peer = self.pm.get_or(&id).await;
@@ -386,10 +396,17 @@ impl RendezvousServer {
                             )
                         }
                     };
+                    log::info!(
+                        "udp RegisterPk {} changed={}, ip_changed={}",
+                        id,
+                        changed,
+                        ip_changed
+                    );
                     let mut req_pk = peer.read().await.reg_pk;
                     if req_pk.1.elapsed().as_secs() > 6 {
                         req_pk.0 = 0;
                     } else if req_pk.0 > 2 {
+                        log::warn!("udp RegisterPk {} rejected: too frequent", id);
                         return send_rk_res(socket, addr, TOO_FREQUENT).await;
                     }
                     req_pk.0 += 1;
@@ -415,7 +432,11 @@ impl RendezvousServer {
                         }
                     }
                     if changed {
-                        self.pm.update_pk(id, peer, addr, rk.uuid, rk.pk, ip).await;
+                        let update_res =
+                            self.pm.update_pk(id.clone(), peer, addr, rk.uuid, rk.pk, ip).await;
+                        log::info!("udp RegisterPk update_pk result for {}: {:?}", id, update_res);
+                    } else {
+                        log::info!("udp RegisterPk {} unchanged, returning OK", id);
                     }
                     let mut msg_out = RendezvousMessage::new();
                     msg_out.set_register_pk_response(RegisterPkResponse {
@@ -555,14 +576,24 @@ impl RendezvousServer {
                 }
                 Some(rendezvous_message::Union::RegisterPk(rk)) => {
                     let addr = try_into_v4(addr);
+                    log::info!(
+                        "tcp RegisterPk from {:?}: id={}, uuid_len={}, pk_len={}",
+                        addr,
+                        rk.id,
+                        rk.uuid.len(),
+                        rk.pk.len()
+                    );
                     let res = if rk.uuid.is_empty() || rk.pk.is_empty() {
+                        log::warn!("tcp RegisterPk ignored for {:?}: empty uuid or pk", addr);
                         UUID_MISMATCH
                     } else {
                         let id = rk.id;
                         let ip = addr.ip().to_string();
                         if id.len() < 6 {
+                            log::warn!("tcp RegisterPk {} rejected: id too short", id);
                             UUID_MISMATCH
                         } else if !self.check_ip_blocker(&ip, &id).await {
+                            log::warn!("tcp RegisterPk {} rejected: ip blocker", id);
                             TOO_FREQUENT
                         } else {
                             let peer = self.pm.get_or(&id).await;
@@ -598,6 +629,12 @@ impl RendezvousServer {
                                     (false, false)
                                 }
                             };
+                            log::info!(
+                                "tcp RegisterPk {} changed={}, ip_changed={}",
+                                id,
+                                changed,
+                                ip_changed
+                            );
 
                             let res = if !changed {
                                 let peer = self.pm.get_or(&id).await;
@@ -617,6 +654,7 @@ impl RendezvousServer {
                                 if req_pk.1.elapsed().as_secs() > 6 {
                                     req_pk.0 = 0;
                                 } else if req_pk.0 > 2 {
+                                    log::warn!("tcp RegisterPk {} rejected: too frequent", id);
                                     let mut msg_out = RendezvousMessage::new();
                                     msg_out.set_register_pk_response(RegisterPkResponse {
                                         result: TOO_FREQUENT.into(),
@@ -647,14 +685,16 @@ impl RendezvousServer {
                                         );
                                     }
                                 }
-                                self.pm
-                                    .update_pk(id, peer, addr, rk.uuid, rk.pk, ip)
-                                    .await
+                                let update_res =
+                                    self.pm.update_pk(id.clone(), peer, addr, rk.uuid, rk.pk, ip).await;
+                                log::info!("tcp RegisterPk update_pk result for {}: {:?}", id, update_res);
+                                update_res
                             };
 
                             res
                         }
                     };
+                    log::info!("tcp RegisterPk response to {:?}: {:?}", addr, res);
                     let mut msg_out = RendezvousMessage::new();
                     msg_out.set_register_pk_response(RegisterPkResponse {
                         result: res.into(),
@@ -664,6 +704,8 @@ impl RendezvousServer {
                 }
                 _ => {}
             }
+        } else {
+            log::warn!("handle_tcp parse failed from {:?}, bytes_len={}", addr, bytes.len());
         }
         false
     }
@@ -1443,6 +1485,7 @@ async fn send_rk_res(
     addr: SocketAddr,
     res: register_pk_response::Result,
 ) -> ResultType<()> {
+    log::info!("send_rk_res to {:?}: {:?}", addr, res);
     let mut msg_out = RendezvousMessage::new();
     msg_out.set_register_pk_response(RegisterPkResponse {
         result: res.into(),
